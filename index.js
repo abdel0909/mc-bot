@@ -1,28 +1,70 @@
-// index.js – Minecraft Bot (ENV-basiert, mit Pathfinding)
+// Minecraft Bot – Java (Mineflayer) + Auto-Build + Chat-Kommandos
 // Start: npm start
-// .env: MC_HOST, MC_PORT, MC_USER, MC_AUTH ('offline' | 'microsoft'), optional MC_VERSION
+// .env Variablen: MC_HOST, MC_PORT, MC_USER, MC_AUTH ('offline' | 'microsoft'), optional MC_VERSION
 
 import 'dotenv/config.js';
 import mineflayer from 'mineflayer';
-import pathfinderPkg from 'mineflayer-pathfinder'; // <-- CommonJS default import
-const { pathfinder, Movements, goals } = pathfinderPkg; // destructure
+import pathfinderPkg from 'mineflayer-pathfinder';   // CJS → Default import
+const { pathfinder, Movements, goals } = pathfinderPkg;
 import minecraftData from 'minecraft-data';
 
 const {
-  MC_HOST,
-  MC_PORT = '25565',
+  MC_HOST = 'yousra17.aternos.me',   // ← eure Aternos-Adresse
+  MC_PORT = '37185',                 // ← Java-Port für den Bot
   MC_USER = 'BotDemo',
-  MC_AUTH = 'offline',
-  MC_VERSION = ''
+  MC_AUTH = 'offline',               // 'offline' (Cracked) ODER 'microsoft'
+  MC_VERSION = ''                    // z. B. '1.20.1' (leer = Auto)
 } = process.env;
 
 if (!MC_HOST) {
-  console.error('❌ MC_HOST fehlt in .env');
-  process.exit(1);
+  console.error('❌ MC_HOST fehlt in .env'); process.exit(1);
 }
 
-let backoff = 5000;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// ---- Auto-Build: einfachen Turm hochziehen (10 Blöcke)
+function pickBuildItem(bot) {
+  const ok = it =>
+    it?.name?.includes('planks') ||
+    it?.name?.includes('stone') ||
+    it?.name?.includes('cobblestone') ||
+    it?.name?.includes('dirt') ||
+    it?.name?.includes('sandstone') ||
+    it?.name?.includes('netherrack');
+  return bot.inventory.items().find(ok);
+}
+async function equipBuildItem(bot) {
+  const item = pickBuildItem(bot);
+  if (!item) throw new Error('Kein Baublock im Inventar (z.B. Cobblestone/Planks).');
+  await bot.equip(item, 'hand');
+}
+async function buildTower(bot, height = 10) {
+  await equipBuildItem(bot);
+  bot.chat(`🏗️ Baue automatisch einen Turm (Höhe ${height}) …`);
+  for (let i = 0; i < height; i++) {
+    try {
+      // Block unter sich platzieren → springen → wiederholen
+      const below = bot.entity.position.offset(0, -1, 0);
+      const base = bot.blockAt(below);
+      if (!base) { bot.chat('Kein Block unter mir gefunden.'); break; }
+      // Blick leicht nach unten hilft beim Platzieren
+      await bot.look(0, Math.PI / 2, true);
+      await bot.placeBlock(base, { x: 0, y: 1, z: 0 });
+      bot.setControlState('jump', true);
+      await sleep(450);
+      bot.setControlState('jump', false);
+      await sleep(250);
+    } catch (e) {
+      console.log('Auto-Build Fehler:', e?.message || e);
+      bot.chat('❌ Konnte nicht weiter bauen.');
+      break;
+    }
+  }
+  bot.chat('✅ Turm fertig.');
+}
+
+// ---- Start + Reconnect
+let backoff = 5000;
 function start() {
   console.log(`🚀 Starte Bot → ${MC_HOST}:${MC_PORT} als ${MC_USER} (auth=${MC_AUTH})`);
 
@@ -34,58 +76,56 @@ function start() {
     version: MC_VERSION || false
   });
 
-  // Plugins
   bot.loadPlugin(pathfinder);
 
-  const say = (m) => { try { bot.chat(m); } catch {} };
-
-  bot.once('spawn', () => {
+  bot.once('spawn', async () => {
     backoff = 5000;
     console.log('✅ Spawn – Bot ist online.');
-    say('Hi! 🤖 Befehle: !help | !pos | !goto x y z | !come [name] | !dig | !stop');
+    bot.chat('Hi! 🤖 !help | !pos | !goto x y z | !come [name] | !dig | !stop');
+    // Demo: automatisch bauen (nach 2s)
+    await sleep(2000);
+    buildTower(bot, 10);
   });
 
-  bot.on('chat', async (username, msg) => {
-    if (username === bot.username) return;
+  // Chat-Kommandos
+  bot.on('chat', async (user, msg) => {
+    if (user === bot.username) return;
     const [cmd, ...args] = msg.trim().split(/\s+/);
+    const say = m => { try { bot.chat(m); } catch {} };
 
-    if (cmd === '!help') {
-      say('!pos | !goto x y z | !come [name] | !dig | !stop');
-    }
+    if (cmd === '!help') return say('!pos | !goto x y z | !come [name] | !dig | !stop');
 
     if (cmd === '!pos') {
       const p = bot.entity.position;
-      say(`Pos: ${p.x.toFixed(1)} ${p.y.toFixed(1)} ${p.z.toFixed(1)} (y=${p.y.toFixed(1)})`);
+      return say(`Pos: ${p.x.toFixed(1)} ${p.y.toFixed(1)} ${p.z.toFixed(1)} (y=${p.y.toFixed(1)})`);
     }
 
     if (cmd === '!stop') {
       try { bot.pathfinder.setGoal(null); } catch {}
       bot.clearControlStates?.();
-      say('⛔ Stop.');
+      return say('⛔ Stop.');
     }
 
     if (cmd === '!goto' && args.length >= 3) {
       const [xs, ys, zs] = args;
       const x = Number(xs), y = Number(ys), z = Number(zs);
-      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return say('Nutze: !goto x y z');
-
+      if (![x,y,z].every(Number.isFinite)) return say('Nutze: !goto x y z');
       const mc = minecraftData(bot.version);
       const movements = new Movements(bot, mc);
       bot.pathfinder.setMovements(movements);
       say(`🧭 Gehe zu ${x} ${y} ${z} …`);
-      bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
+      return bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
     }
 
     if (cmd === '!come') {
-      const targetName = args[0] || username;
-      const target = bot.players[targetName]?.entity;
-      if (!target) return say(`Spieler nicht gefunden: ${targetName}`);
-
+      const name = args[0] || user;
+      const target = bot.players[name]?.entity;
+      if (!target) return say(`Spieler nicht gefunden: ${name}`);
       const mc = minecraftData(bot.version);
       const movements = new Movements(bot, mc);
       bot.pathfinder.setMovements(movements);
-      say(`🏃 Komme zu ${targetName} …`);
-      bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1));
+      say(`🏃 Komme zu ${name} …`);
+      return bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1));
     }
 
     if (cmd === '!dig') {
@@ -94,7 +134,7 @@ function start() {
         const front = bot.entity.position.offset(Math.cos(dir), 0, Math.sin(dir));
         let block = bot.blockAt(front);
         if (!block || block.name === 'air') block = bot.blockAt(bot.entity.position.offset(0, -1, 0));
-        if (!block || block.name === 'air') return say('Kein Block vor mir.');
+        if (!block || block.name === 'air') return say('Kein Block zum Abbauen.');
         if (!bot.canDigBlock(block)) return say(`Kann nicht abbauen: ${block.name}`);
         say(`⛏️ Baue: ${block.name}`);
         await bot.dig(block);
@@ -113,5 +153,4 @@ function start() {
     setTimeout(() => { backoff = Math.min(backoff * 2, 30000); start(); }, backoff);
   });
 }
-
 start();
