@@ -1,31 +1,31 @@
-// index.js – Minecraft Bot (Java) mit Pathfinding & Chat-Kommandos
-// Start:   npm start
-// Env:     MC_HOST, MC_PORT, MC_USER, MC_AUTH ('offline' | 'microsoft'), MC_VERSION (optional)
+// index.js – Minecraft Bot (ENV-basiert, mit Pathfinding)
+// Start: npm start
+// .env: MC_HOST, MC_PORT, MC_USER, MC_AUTH ('offline' | 'microsoft'), optional MC_VERSION
 
 import 'dotenv/config.js';
 import mineflayer from 'mineflayer';
-import pkg from 'mineflayer-pathfinder';
-const { pathfinder, Movements, goals } = pkg;
+import pathfinderPkg from 'mineflayer-pathfinder'; // <-- CommonJS default import
+const { pathfinder, Movements, goals } = pathfinderPkg; // destructure
 import minecraftData from 'minecraft-data';
 
 const {
-  MC_HOST = '',
+  MC_HOST,
   MC_PORT = '25565',
   MC_USER = 'BotDemo',
-  MC_AUTH = 'offline',          // 'offline' (Cracked) oder 'microsoft'
-  MC_VERSION = ''               // z.B. '1.20.1' (leer = Auto)
+  MC_AUTH = 'offline',
+  MC_VERSION = ''
 } = process.env;
 
 if (!MC_HOST) {
-  console.error('❌ MC_HOST ist nicht gesetzt. Beispiel:\n' +
-    'export MC_HOST=DEINNAME.aternos.me\nexport MC_PORT=25565\nexport MC_USER=BotDemo\nexport MC_AUTH=offline');
+  console.error('❌ MC_HOST fehlt in .env');
   process.exit(1);
 }
 
-let reconnectDelay = 5000; // ms, wächst bei Fehlern bis 30s
+let backoff = 5000;
 
-function startBot() {
+function start() {
   console.log(`🚀 Starte Bot → ${MC_HOST}:${MC_PORT} als ${MC_USER} (auth=${MC_AUTH})`);
+
   const bot = mineflayer.createBot({
     host: MC_HOST,
     port: Number(MC_PORT),
@@ -37,121 +37,81 @@ function startBot() {
   // Plugins
   bot.loadPlugin(pathfinder);
 
-  // ---- Utils
-  const say = (msg) => {
-    try { bot.chat(msg); } catch {}
-  };
+  const say = (m) => { try { bot.chat(m); } catch {} };
 
-  const safeNumber = (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-
-  const helpText =
-    'Befehle: !pos | !goto x y z | !come <spieler> | !stop | !dig | !say <text>';
-
-  // ---- Events
   bot.once('spawn', () => {
-    reconnectDelay = 5000;
+    backoff = 5000;
     console.log('✅ Spawn – Bot ist online.');
-    say('Hallo! 🤖 Tippe !help für Befehle.');
-    // Grundbewegungen (AFK-Schutz light): alle 60s kurz springen
-    setInterval(() => {
-      try { bot.setControlState('jump', true); setTimeout(() => bot.setControlState('jump', false), 200); } catch {}
-    }, 60000);
+    say('Hi! 🤖 Befehle: !help | !pos | !goto x y z | !come [name] | !dig | !stop');
   });
 
-  bot.on('chat', async (username, message) => {
+  bot.on('chat', async (username, msg) => {
     if (username === bot.username) return;
-    const parts = message.trim().split(/\s+/);
-    const cmd = parts[0]?.toLowerCase();
+    const [cmd, ...args] = msg.trim().split(/\s+/);
 
     if (cmd === '!help') {
-      say(helpText);
-      return;
+      say('!pos | !goto x y z | !come [name] | !dig | !stop');
     }
 
     if (cmd === '!pos') {
       const p = bot.entity.position;
       say(`Pos: ${p.x.toFixed(1)} ${p.y.toFixed(1)} ${p.z.toFixed(1)} (y=${p.y.toFixed(1)})`);
-      return;
-    }
-
-    if (cmd === '!say') {
-      const text = parts.slice(1).join(' ');
-      if (text) say(text);
-      return;
     }
 
     if (cmd === '!stop') {
       try { bot.pathfinder.setGoal(null); } catch {}
+      bot.clearControlStates?.();
       say('⛔ Stop.');
-      return;
     }
 
-    if (cmd === '!goto' && parts.length >= 4) {
-      const x = safeNumber(parts[1]);
-      const y = safeNumber(parts[2]);
-      const z = safeNumber(parts[3]);
-      if (x === null || y === null || z === null) { say('Nutze: !goto x y z'); return; }
+    if (cmd === '!goto' && args.length >= 3) {
+      const [xs, ys, zs] = args;
+      const x = Number(xs), y = Number(ys), z = Number(zs);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return say('Nutze: !goto x y z');
 
       const mc = minecraftData(bot.version);
       const movements = new Movements(bot, mc);
       bot.pathfinder.setMovements(movements);
-
       say(`🧭 Gehe zu ${x} ${y} ${z} …`);
       bot.pathfinder.setGoal(new goals.GoalBlock(x, y, z));
-      return;
     }
 
     if (cmd === '!come') {
-      const targetName = parts[1] || username; // Standard: zum Rufenden
+      const targetName = args[0] || username;
       const target = bot.players[targetName]?.entity;
-      if (!target) { say(`Spieler nicht gefunden: ${targetName}`); return; }
+      if (!target) return say(`Spieler nicht gefunden: ${targetName}`);
 
       const mc = minecraftData(bot.version);
       const movements = new Movements(bot, mc);
       bot.pathfinder.setMovements(movements);
-
       say(`🏃 Komme zu ${targetName} …`);
       bot.pathfinder.setGoal(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 1));
-      return;
     }
 
     if (cmd === '!dig') {
       try {
-        // Baue den Block direkt vor dem Bot ab (oder unter ihm, falls Luft)
         const dir = bot.entity.yaw;
         const front = bot.entity.position.offset(Math.cos(dir), 0, Math.sin(dir));
         let block = bot.blockAt(front);
         if (!block || block.name === 'air') block = bot.blockAt(bot.entity.position.offset(0, -1, 0));
-        if (!block || block.name === 'air') { say('Kein Block zum Abbauen.'); return; }
-        if (!bot.canDigBlock(block)) { say(`Kann Block nicht abbauen: ${block.name}`); return; }
-
+        if (!block || block.name === 'air') return say('Kein Block vor mir.');
+        if (!bot.canDigBlock(block)) return say(`Kann nicht abbauen: ${block.name}`);
         say(`⛏️ Baue: ${block.name}`);
         await bot.dig(block);
         say('Fertig.');
       } catch (e) {
-        console.log('Dig-Fehler:', e.message);
-        say('Konnte nicht abbauen.');
+        console.log('Dig-Fehler:', e?.message || e);
+        say('Dig fehlgeschlagen.');
       }
-      return;
     }
   });
 
-  bot.on('kicked', (reason) => {
-    console.log('🥾 Kicked:', reason);
-  });
-
-  bot.on('error', (err) => {
-    console.log('⚠️ Error:', err?.message || err);
-  });
-
+  bot.on('kicked', r => console.log('🥾 Kicked:', r));
+  bot.on('error', e => console.log('⚠️ Error:', e?.message || e));
   bot.on('end', () => {
-    console.log(`🔁 Verbindung verloren. Neuer Versuch in ${Math.floor(reconnectDelay/1000)}s …`);
-    setTimeout(() => {
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000); // max 30s
-      startBot();
-    }, reconnectDelay);
+    console.log(`🔁 Getrennt. Neuer Versuch in ${Math.floor(backoff/1000)}s …`);
+    setTimeout(() => { backoff = Math.min(backoff * 2, 30000); start(); }, backoff);
   });
 }
+
+start();
