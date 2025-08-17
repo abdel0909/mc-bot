@@ -10,7 +10,7 @@ import minecraftData from 'minecraft-data';
 
 const {
   MC_HOST = 'yousra17.aternos.me',   // ← eure Aternos-Adresse
-  MC_PORT = '37185',                 // ← Java-Port für den Bot
+  MC_PORT = '25565',                 // ← Java-Port für den Bot
   MC_USER = 'BotDemo',
   MC_AUTH = 'offline',               // 'offline' (Cracked) ODER 'microsoft'
   MC_VERSION = ''                    // z. B. '1.20.1' (leer = Auto)
