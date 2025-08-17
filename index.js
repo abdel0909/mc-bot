@@ -4,7 +4,8 @@
 
 import 'dotenv/config.js';
 import mineflayer from 'mineflayer';
-import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+import pkg from 'mineflayer-pathfinder';
+const { pathfinder, Movements, goals } = pkg;
 import minecraftData from 'minecraft-data';
 
 const {
