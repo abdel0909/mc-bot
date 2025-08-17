@@ -154,5 +154,3 @@ function startBot() {
     }, reconnectDelay);
   });
 }
-
-startBot();
